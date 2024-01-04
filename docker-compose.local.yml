@@ -1,0 +1,150 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    # volumes:
+    #   - .:/usr/src/app
+    # ports:
+    #   - "8000:8000"
+    depends_on:
+      # - db
+      # - redis
+      db:
+        condition: service_healthy
+      # redis:
+      #   condition: service_started
+    environment:
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_USER=${DATABASE_USER}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
+      - DATABASE_PORT=${DATABASE_PORT}
+    networks:
+      - backend
+
+  # celery:
+  #   build: .
+  #   command: celery -A your_project worker --loglevel=info
+  #   volumes:
+  #     - .:/usr/src/app
+  #   depends_on:
+  #     # - db
+  #     # - redis
+  #     db:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_started
+  #   environment:
+  #     - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+  #     - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+
+  db:
+    image: postgres:latest
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # - ./path/to/init_script.sh:/docker-entrypoint-initdb.d/init_script.sh
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # redis:
+  #   image: redis:latest
+  #   ports:
+  #     - "6379:6379"
+
+  pgadmin:
+    image: dpage/pgadmin4
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    networks:
+      - frontend
+      - backend
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "8025:8025" # Web interface
+      - "1025:1025" # SMTP server
+    networks:
+      - backend
+
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile_frontend
+  #   volumes:
+  #     - ./frontend:/app
+  #     - /app/node_modules
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     - NODE_ENV=development
+  #   command: npm run serve
+  #   networks:
+  #     - frontend
+
+  # nginx:
+  #   image: nginx:latest
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/conf:/etc/nginx/conf.d
+  #     - ./nginx/certbot/conf:/etc/letsencrypt
+  #     - ./nginx/certbot/www:/var/www/certbot
+  #     # - static_volume:/path/to/your/staticfiles
+  #   depends_on:
+  #     - app
+  #   networks:
+  #     - backend
+  #     - frontend
+
+  # certbot:
+  #   image: certbot/certbot
+  #   volumes:
+  #     - ./nginx/certbot/conf:/etc/letsencrypt
+  #     - ./nginx/certbot/www:/var/www/certbot
+  #   entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+  #   depends_on:
+  #     - nginx
+
+  # vault:
+  #   image: vault:latest
+  #   ports:
+  #     - "8200:8200"
+  #   environment:
+  #     VAULT_DEV_ROOT_TOKEN_ID: myroot
+  #     VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+  #     VAULT_ADDR: http://0.0.0.0:8200
+  #   cap_add:
+  #     - IPC_LOCK
+  #   volumes:
+  #     - vault_data:/vault/file
+  #   networks:
+  #     - backend
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  # static_volume:
+  # vault_data:
