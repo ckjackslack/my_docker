@@ -1,62 +1,49 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+# Python development image for the `app` (and `celery`) services.
+# Build context is the repository root; APP_DIR selects the application directory.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ARG TZ=UTC
+ARG APP_DIR=app
+# 1 = also install the developer tool belt (linters, poetry, ansible, ssh/rsync, vim).
+ARG INSTALL_DEV_TOOLS=1
+ARG USER_UID=1000
 
-# Set the working directory in the container
-# WORKDIR /usr/src/app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=${TZ}
 
-# Updating the system and installing basic tools
-RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y curl git vim \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tzdata \
+    && if [ "$INSTALL_DEV_TOOLS" = "1" ]; then \
+         apt-get install -y --no-install-recommends openssh-client rsync vim; \
+       fi \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime \
+    && echo "$TZ" > /etc/timezone
 
-# Install Ansible and any other dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ansible \
-    ssh \
-    openssh-client \
-    rsync \
-    && rm -rf /var/lib/apt/lists/*
+RUN if [ "$INSTALL_DEV_TOOLS" = "1" ]; then \
+      pip install black flake8 isort mypy poetry ansible; \
+    fi
 
-# Install poetry for dependency management
-# Install development tools
-RUN pip install flake8 black isort mypy poetry ansible
+RUN useradd --create-home --uid "$USER_UID" developer
 
-# Install dependencies in a virtual environment to be copied later
-# RUN python -m venv /venv
-# ENV PATH="/venv/bin:$PATH"
+WORKDIR /usr/src/app
 
-# Set the timezone (replace with your timezone)
-ENV TZ=Europe/Warsaw
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# Dependencies first so they are cached until requirements.txt changes.
+COPY ${APP_DIR}/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
 
-# Create a non-root user and switch to it
-RUN useradd -m developer
+COPY --chown=developer:developer ${APP_DIR}/ ./
+RUN mkdir -p staticfiles && chown developer:developer staticfiles
+
 USER developer
 
-# Install Python dependencies
-# This is done before copying the project files to cache the dependencies
-# and only re-build them when they change
-# COPY requirements.txt ./
-# or
-# COPY --chown=developer:developer requirements.txt ./
-# RUN pip install --no-cache-dir -r requirements.txt
+EXPOSE 8000
 
-# Copy the current directory contents into the container at /usr/src/app
-# COPY . .
-# or
-# COPY --chown=developer:developer . .
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
 
-# Health check for the application
-# HEALTHCHECK --interval=30s --timeout=3s \
-#   CMD curl -f http://localhost:8000/ || exit 1
-
-# Expose port 8000 for web applications
-# EXPOSE 8000
-
-# Run the application
-# CMD ["python", "./your-app.py"]
+CMD ["python", "main.py"]

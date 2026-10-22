@@ -1,143 +1,181 @@
-version: '3.8'
+# Reusable local development stack.
+#
+#   my-docker env                                   # create .env with random secrets
+#   docker compose -f docker-compose.local.yml up   # core: app + db + mailpit
+#   docker compose -f docker-compose.local.yml --profile tools --profile worker up
+#
+# Optional services are switched on with compose profiles instead of commenting YAML:
+#   tools     pgAdmin
+#   worker    Redis + Celery worker (your app must define a Celery app, see CELERY_APP)
+#   frontend  Node dev server built from Dockerfile_frontend (expects ./frontend)
+#   proxy     nginx reverse proxy in front of the app (renders nginx.conf as a template)
+#   vault     HashiCorp Vault in dev mode
+#
+# All published ports bind to 127.0.0.1 and are configurable through .env.
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+  args:
+    PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+    APP_DIR: ${APP_DIR:-app}
+    TZ: ${TZ:-UTC}
+    INSTALL_DEV_TOOLS: ${INSTALL_DEV_TOOLS:-1}
+
+x-app-environment: &app-environment
+  DATABASE_HOST: db
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+  DATABASE_USER: ${DATABASE_USER:?set DATABASE_USER in .env}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
+  EMAIL_HOST: mailpit
+  EMAIL_PORT: "1025"
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+  TZ: ${TZ:-UTC}
 
 services:
   app:
-    build: .
-    # volumes:
-    #   - .:/usr/src/app
-    # ports:
-    #   - "8000:8000"
+    build: *app-build
+    environment: *app-environment
+    volumes:
+      - ./${APP_DIR:-app}:/usr/src/app
+      - static_data:/usr/src/app/staticfiles
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
     depends_on:
-      # - db
-      # - redis
       db:
         condition: service_healthy
-      # redis:
-      #   condition: service_started
-    environment:
-      - DATABASE_HOST=${DATABASE_HOST}
-      - DATABASE_USER=${DATABASE_USER}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
-      - DATABASE_NAME=${DATABASE_NAME}
-      - DATABASE_PORT=${DATABASE_PORT}
     networks:
       - backend
 
-  # celery:
-  #   build: .
-  #   command: celery -A your_project worker --loglevel=info
-  #   volumes:
-  #     - .:/usr/src/app
-  #   depends_on:
-  #     # - db
-  #     # - redis
-  #     db:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_started
-  #   environment:
-  #     - CELERY_BROKER_URL=${CELERY_BROKER_URL}
-  #     - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
-
   db:
-    image: postgres:latest
+    image: postgres:${POSTGRES_VERSION:-16}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      # Read by init-script.sh to create the application role on first start.
+      DATABASE_USER: ${DATABASE_USER:?set DATABASE_USER in .env}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # - ./path/to/init_script.sh:/docker-entrypoint-initdb.d/init_script.sh
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      - ./init-script.sh:/docker-entrypoint-initdb.d/10-init-script.sh:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - backend
 
-  # redis:
-  #   image: redis:latest
-  #   ports:
-  #     - "6379:6379"
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "127.0.0.1:${MAIL_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAIL_SMTP_PORT:-1025}:1025"
+    networks:
+      - backend
 
   pgadmin:
-    image: dpage/pgadmin4
+    image: dpage/pgadmin4:8
+    profiles: ["tools"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-}
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     ports:
-      - "5050:80"
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["worker"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend
+
+  celery:
+    build: *app-build
+    profiles: ["worker"]
+    command: ["celery", "-A", "${CELERY_APP:-app}", "worker", "--loglevel=info"]
+    environment: *app-environment
+    volumes:
+      - ./${APP_DIR:-app}:/usr/src/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks:
+      - backend
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile_frontend
+      args:
+        NODE_VERSION: ${NODE_VERSION:-20}
+        FRONTEND_DIR: ${FRONTEND_DIR:-frontend}
+    profiles: ["frontend"]
+    environment:
+      NODE_ENV: development
+      NPM_SCRIPT: ${FRONTEND_NPM_SCRIPT:-serve}
+    volumes:
+      - ./${FRONTEND_DIR:-frontend}:/app
+      - /app/node_modules
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:8080"
+    networks:
+      - frontend
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["proxy"]
+    environment:
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-localhost}
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE:-20m}
+    volumes:
+      - ./nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - static_data:/srv/static:ro
+    ports:
+      - "127.0.0.1:${NGINX_PORT:-80}:80"
+    depends_on:
+      app:
+        condition: service_healthy
     networks:
       - frontend
       - backend
 
-  mailhog:
-    image: mailhog/mailhog:latest
+  vault:
+    image: hashicorp/vault:1.17
+    profiles: ["vault"]
+    environment:
+      # Empty token -> Vault generates one and prints it in `docker compose logs vault`.
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      - IPC_LOCK
     ports:
-      - "8025:8025" # Web interface
-      - "1025:1025" # SMTP server
+      - "127.0.0.1:${VAULT_PORT:-8200}:8200"
     networks:
       - backend
-
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile_frontend
-  #   volumes:
-  #     - ./frontend:/app
-  #     - /app/node_modules
-  #   ports:
-  #     - "8080:8080"
-  #   environment:
-  #     - NODE_ENV=development
-  #   command: npm run serve
-  #   networks:
-  #     - frontend
-
-  # nginx:
-  #   image: nginx:latest
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx/conf:/etc/nginx/conf.d
-  #     - ./nginx/certbot/conf:/etc/letsencrypt
-  #     - ./nginx/certbot/www:/var/www/certbot
-  #     # - static_volume:/path/to/your/staticfiles
-  #   depends_on:
-  #     - app
-  #   networks:
-  #     - backend
-  #     - frontend
-
-  # certbot:
-  #   image: certbot/certbot
-  #   volumes:
-  #     - ./nginx/certbot/conf:/etc/letsencrypt
-  #     - ./nginx/certbot/www:/var/www/certbot
-  #   entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
-  #   depends_on:
-  #     - nginx
-
-  # vault:
-  #   image: vault:latest
-  #   ports:
-  #     - "8200:8200"
-  #   environment:
-  #     VAULT_DEV_ROOT_TOKEN_ID: myroot
-  #     VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-  #     VAULT_ADDR: http://0.0.0.0:8200
-  #   cap_add:
-  #     - IPC_LOCK
-  #   volumes:
-  #     - vault_data:/vault/file
-  #   networks:
-  #     - backend
 
 networks:
   frontend:
@@ -146,5 +184,4 @@ networks:
 volumes:
   postgres_data:
   pgadmin_data:
-  # static_volume:
-  # vault_data:
+  static_data:

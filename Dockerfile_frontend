@@ -1,20 +1,20 @@
-# Use an official Node.js runtime as a parent image
-FROM node:14
+# Node development image for the optional `frontend` compose profile.
+# Build context is the repository root; FRONTEND_DIR selects the frontend directory.
+ARG NODE_VERSION=20
+FROM node:${NODE_VERSION}-slim
 
-# Set the working directory
+ARG FRONTEND_DIR=frontend
+
 WORKDIR /app
 
-# Copy package.json and package-lock.json (if available)
-COPY package*.json ./
+# npm script started by the container (`serve` for Vue CLI, `dev` for Vite, ...).
+ENV NPM_SCRIPT=serve
 
-# Install project dependencies
+COPY ${FRONTEND_DIR}/package*.json ./
 RUN npm install
 
-# Copy the project files into the Docker image
-COPY . .
+COPY ${FRONTEND_DIR}/ ./
 
-# Expose port 8080
 EXPOSE 8080
 
-# Default command to run the app
-CMD ["npm", "run", "serve"]
+CMD ["sh", "-c", "exec npm run \"$NPM_SCRIPT\""]

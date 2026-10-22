@@ -1,0 +1,2 @@
+# Runtime dependencies of the app image (installed by the Dockerfile).
+# The placeholder app only uses the standard library.
