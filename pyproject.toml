@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-docker"
+version = "0.2.0"
+description = "Reusable local Docker dev stack plus a helper CLI to generate .env secrets and statically check the compose wiring."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ckjackslack" }]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "shellcheck-py>=0.9"]
+
+[project.scripts]
+my-docker = "my_docker.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_docker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
